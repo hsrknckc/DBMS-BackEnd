@@ -35,3 +35,7 @@ out/
 
 ### VS Code ###
 .vscode/
+
+### Gercek kimlik bilgileri (asla commit'lenmez) ###
+set-credentials.sh
+application-local.properties

@@ -72,7 +72,7 @@ public class DataController {
     public List<Map<String, Object>> read(@PathVariable String db,
                                           @PathVariable String collection,
                                           @RequestParam Map<String, String> queryParams) {
-        return client.read(db, collection, new HashMap<>(queryParams));
+        return client.read(db, collection, parseFilter(queryParams));
     }
 
     /** Kayıt yazma (Ister_0017). Gövdedeki JSON olduğu gibi kaydedilir. */
@@ -102,8 +102,41 @@ public class DataController {
     public Map<String, String> delete(@PathVariable String db,
                                       @PathVariable String collection,
                                       @RequestParam Map<String, String> queryParams) {
-        client.delete(db, collection, new HashMap<>(queryParams));
+        client.delete(db, collection, parseFilter(queryParams));
         return Map.of("message", "Silme yapıldı");
+    }
+
+    /**
+     * HTTP query parametreleri HER ZAMAN metin olarak gelir: ?sinif=3 -> "3".
+     * Ara katman ise filtreyi tip duyarlı karşılaştırır; kayıtta sayı 3 varken
+     * metin "3" ile arama yapılırsa hiçbir kayıt eşleşmez.
+     *
+     * Bu yüzden sayıya/boolean'a benzeyen değerleri gerçek tipine çeviriyoruz.
+     * Sınır: gerçekten metin olarak saklanmış "3" gibi bir değeri artık
+     * ?alan=3 ile bulamazsın; öyle bir ihtiyaç olursa filtreyi gövdede
+     * JSON olarak alan ayrı bir uç eklenmeli.
+     */
+    private static Map<String, Object> parseFilter(Map<String, String> queryParams) {
+        Map<String, Object> filter = new HashMap<>();
+        queryParams.forEach((key, value) -> filter.put(key, parseValue(value)));
+        return filter;
+    }
+
+    /** "3" -> 3, "2.5" -> 2.5, "true" -> true, "Ali" -> "Ali" */
+    private static Object parseValue(String raw) {
+        if ("true".equalsIgnoreCase(raw) || "false".equalsIgnoreCase(raw)) {
+            return Boolean.parseBoolean(raw);
+        }
+        try {
+            return Integer.valueOf(raw);
+        } catch (NumberFormatException notAnInteger) {
+            // tam sayı değil, ondalık olabilir
+        }
+        try {
+            return Double.valueOf(raw);
+        } catch (NumberFormatException notANumber) {
+            return raw; // düz metin
+        }
     }
 
     /** PUT gövdesinin şekli. */

@@ -32,4 +32,9 @@ dependencies {
 
 tasks.named('test') {
     useJUnitPlatform()
+    // Spring context'i middleware.username/password placeholder'larini
+    // cozebilsin diye zararsiz sahte degerler. Gercek EC2'ye baglanmaya
+    // CALISMAZ - baglanti sadece ilk gercek istekte, tembel olarak kurulur.
+    environment 'MIDDLEWARE_USER', 'test@example.com'
+    environment 'MIDDLEWARE_PASSWORD', 'test-password'
 }

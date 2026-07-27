@@ -39,3 +39,13 @@ tasks.register('runMockServer', JavaExec) {
     classpath = sourceSets.main.runtimeClasspath
     mainClass = 'com.example.dbmslib.mock.MockMiddlewareServer'
 }
+
+// Gerçek ara katman sunucusuna bağlantıyı sınamak için:
+//   ./gradlew :backend-lib:runProbe
+//   ./gradlew :backend-lib:runProbe --args="HOST PORT KULLANICI SIFRE"
+tasks.register('runProbe', JavaExec) {
+    group = 'application'
+    description = 'Ara katman sunucusuna bağlanıp temel işlemleri sınar (tanılama aracı)'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.example.dbmslib.tools.ConnectionProbe'
+}

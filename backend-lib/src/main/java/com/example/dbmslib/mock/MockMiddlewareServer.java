@@ -47,6 +47,18 @@ public class MockMiddlewareServer implements AutoCloseable {
             // guest sadece okuyabilir — yetki reddi (UNAUTHORIZED) senaryosunu test etmek için
             "guest", new UserAccount("guest123", Set.of(
                     ActionType.PING, ActionType.READ,
+                    ActionType.LIST_DATABASES, ActionType.LIST_COLLECTIONS)),
+
+            // Gerçek ara katman sunucusundaki kullanıcı ADLARININ aynısı (yalnızca
+            // e-posta kısmı), ama BİLEREK FARKLI, uydurma bir şifreyle. Bu depo
+            // herkese açık; gerçek EC2 şifresi hiçbir zaman burada yazmaz.
+            // Yerel testte bu kullanıcıları kullanmak istersen set-credentials.sh
+            // dosyandaki (git'e gitmeyen) gerçek şifreyi DEĞİL, aşağıdaki sahte
+            // şifreyi gir.
+            "ayse@company.com", new UserAccount("mock-fake-pass-1", Set.of(ActionType.values())),
+            // mehmet sınırlı yetkili: okuyabilir ve yazabilir, ama güncelleyemez/silemez
+            "mehmet@company.com", new UserAccount("mock-fake-pass-2", Set.of(
+                    ActionType.PING, ActionType.READ, ActionType.WRITE,
                     ActionType.LIST_DATABASES, ActionType.LIST_COLLECTIONS))
     );
 
