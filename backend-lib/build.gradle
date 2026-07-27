@@ -1,0 +1,41 @@
+// ARKA YÜZ KÜTÜPHANESİ (Ister_0016..0019)
+// Dikkat: Bu modülde Spring YOKTUR. Doküman "kütüphane" dediği için
+// herhangi bir Java uygulamasına eklenebilecek sade bir JAR üretir.
+plugins {
+    id 'java-library'
+}
+
+group = 'com.example'
+version = '1.0.0'
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    // JSON <-> Java nesne dönüşümü için tek dış bağımlılık
+    api 'com.fasterxml.jackson.core:jackson-databind:2.18.2'
+
+    testImplementation platform('org.junit:junit-bom:5.11.4')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+}
+
+// Sahte ara katman sunucusunu elle çalıştırmak için:
+//   ./gradlew :backend-lib:runMockServer
+tasks.register('runMockServer', JavaExec) {
+    group = 'application'
+    description = 'Sahte ara katman (mock) sunucusunu 5150 portunda başlatır'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.example.dbmslib.mock.MockMiddlewareServer'
+}

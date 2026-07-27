@@ -1,0 +1,6 @@
+// Çok modüllü proje tanımı:
+//  - backend-lib : Arka Yüz kütüphanesi (saf Java, Spring yok)
+//  - demo-api    : Kütüphaneyi kullanan örnek REST API uygulaması (Spring Boot)
+rootProject.name = 'dbms_backend'
+include 'backend-lib'
+include 'demo-api'
