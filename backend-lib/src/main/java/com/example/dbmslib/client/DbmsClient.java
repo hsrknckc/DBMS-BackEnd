@@ -5,6 +5,7 @@ import com.example.dbmslib.exception.DbmsException;
 import com.example.dbmslib.protocol.ActionType;
 import com.example.dbmslib.protocol.DbRequest;
 import com.example.dbmslib.protocol.DbResponse;
+import com.example.dbmslib.protocol.ResponseStatus;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -42,15 +43,44 @@ public class DbmsClient implements AutoCloseable {
     }
 
     /**
+     * Sunucu aktiflik kontrolünün ayrıntılı sonucu.
+     *
+     * @param alive  sunucu ve veritabanı erişilebilir mi
+     * @param detail insan okunur açıklama (neden başarısız olduğu dahil)
+     */
+    public record HealthStatus(boolean alive, String detail) {
+    }
+
+    /**
      * Veritabanı sunucusu aktif mi? (Ister_0018)
-     * Diğer metodların aksine hata fırlatmaz: sunucuya ulaşılamıyorsa
-     * bu zaten sorulan sorunun cevabıdır -> false.
+     * Hata fırlatmaz; sunucuya ulaşılamıyorsa bu zaten sorulan sorunun
+     * cevabıdır -> false.
      */
     public boolean ping() {
+        return checkHealth().alive();
+    }
+
+    /**
+     * ping() ile aynı kontrolü yapar ama BAŞARISIZLIK SEBEBİNİ de döner.
+     *
+     * Bu ayrım pratikte önemli: yalnızca "false" görmek, "sunucu kapalı" ile
+     * "şifre yanlış" durumlarını birbirine karıştırır ve yanlış yerde hata
+     * aranmasına yol açar.
+     */
+    public HealthStatus checkHealth() {
         try {
-            return connection.send(newRequest(ActionType.PING)).isOk();
+            DbResponse response = connection.send(newRequest(ActionType.PING));
+            if (response.isOk()) {
+                return new HealthStatus(true, "Sunucu aktif");
+            }
+            if (response.getStatus() == ResponseStatus.UNAUTHORIZED) {
+                return new HealthStatus(false,
+                        "Sunucuya ulaşıldı fakat kimlik reddedildi (kullanıcı adı tam e-posta mı?): "
+                                + response.getMessage());
+            }
+            return new HealthStatus(false, "Sunucu hata döndü: " + response.getMessage());
         } catch (DbmsException unreachable) {
-            return false;
+            return new HealthStatus(false, "Ara katmana ulaşılamıyor: " + unreachable.getMessage());
         }
     }
 
@@ -128,11 +158,24 @@ public class DbmsClient implements AutoCloseable {
         return response;
     }
 
+    /**
+     * Cevaptaki data alanını kayıt listesine çevirir.
+     *
+     * Ara katman beklenmedik bir şey döndürürse (örneğin kayıt listesi yerine
+     * düz metin) ham ClassCastException yerine anlaşılır bir DbmsException
+     * fırlatılır; kütüphaneyi kullanan uygulama tek tip hata yakalamaya
+     * devam edebilsin diye.
+     */
     @SuppressWarnings("unchecked")
     private List<Map<String, Object>> toRecordList(DbResponse response) {
         List<Map<String, Object>> records = new ArrayList<>();
         if (response.getData() != null) {
             for (Object item : response.getData()) {
+                if (!(item instanceof Map)) {
+                    throw new DbmsException(
+                            "Ara katmandan beklenmeyen cevap: kayıt listesi bekleniyordu, gelen: "
+                                    + (item == null ? "null" : item.getClass().getSimpleName()));
+                }
                 records.add((Map<String, Object>) item);
             }
         }

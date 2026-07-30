@@ -3,6 +3,7 @@ package com.example.dbmslib;
 import com.example.dbmslib.client.DbmsClient;
 import com.example.dbmslib.exception.DbmsException;
 import com.example.dbmslib.mock.MockMiddlewareServer;
+import com.example.dbmslib.protocol.ResponseStatus;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -13,6 +14,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -116,6 +118,38 @@ class DbmsClientTest {
         DbmsException e = assertThrows(DbmsException.class,
                 () -> guest.write("test_yetki", "veri", Map.of("x", 1)));
         assertTrue(e.isUnauthorized());
+    }
+
+    @Test
+    void tipHatasiAnlasilirSekildeYukariTasinir() { // Ister_0014'un istemci tarafi
+        DbmsException e = assertThrows(DbmsException.class,
+                () -> admin.write("test_tip", "kayitlar", Map.of("sayi_yas", "yirmi iki")));
+
+        // Sunucu cevap verdigi icin status dolu olmali (baglanti hatasi degil)
+        assertEquals(ResponseStatus.ERROR, e.getStatus());
+        assertFalse(e.isUnauthorized());
+        assertTrue(e.getMessage().contains("must be of type int"),
+                "Sunucunun acikladigi sebep kullaniciya ulasmali: " + e.getMessage());
+    }
+
+    @Test
+    void checkHealthSunucuAyaktaykenSebepBildirir() {
+        DbmsClient.HealthStatus status = admin.checkHealth();
+
+        assertTrue(status.alive());
+        assertNotNull(status.detail());
+    }
+
+    @Test
+    void checkHealthYanlisSifreyiSunucuKapaliyla_karistirmaz() {
+        try (DbmsClient wrongPassword =
+                     new DbmsClient("localhost", server.getPort(), "admin", "yanlis")) {
+            DbmsClient.HealthStatus status = wrongPassword.checkHealth();
+
+            assertFalse(status.alive());
+            assertTrue(status.detail().contains("kimlik"),
+                    "Sebep 'kimlik reddedildi' olmali, 'ulasilamiyor' degil: " + status.detail());
+        }
     }
 
     @Test

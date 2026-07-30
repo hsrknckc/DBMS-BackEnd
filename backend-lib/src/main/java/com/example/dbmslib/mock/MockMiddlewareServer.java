@@ -162,8 +162,32 @@ public class MockMiddlewareServer implements AutoCloseable {
         if (request.getDatabase() == null || request.getCollection() == null || request.getDocument() == null) {
             return error(request.getRequestId(), "WRITE için database, collection ve document zorunludur");
         }
+        String typeError = validateTypes(request);
+        if (typeError != null) {
+            return error(request.getRequestId(), typeError);
+        }
         collectionOf(request).add(new HashMap<>(request.getDocument()));
         return ok(request.getRequestId(), "1 kayıt eklendi", null);
+    }
+
+    /**
+     * Gerçek ara katmandaki tip doğrulamasının (Ister_0014) sadeleştirilmiş
+     * taklidi: "sayi_" ile başlayan alanlar sayı olmak zorundadır.
+     *
+     * Amaç gerçek şema motorunu kopyalamak değil; kütüphanenin ERROR cevabını
+     * doğru taşıdığını sahte sunucuyla da test edebilmek.
+     *
+     * @return hata mesajı, sorun yoksa null
+     */
+    private String validateTypes(DbRequest request) {
+        for (Map.Entry<String, Object> field : request.getDocument().entrySet()) {
+            if (field.getKey().startsWith("sayi_") && !(field.getValue() instanceof Number)) {
+                return "Invalid data format: Field '" + field.getKey()
+                        + "' must be of type int but got "
+                        + (field.getValue() == null ? "null" : field.getValue().getClass().getSimpleName());
+            }
+        }
+        return null;
     }
 
     private DbResponse doRead(DbRequest request) {

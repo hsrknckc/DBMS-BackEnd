@@ -44,11 +44,17 @@ public class DataController {
         this.monitor = monitor;
     }
 
-    /** Sunucu aktifliği (Ister_0018): hem anlık ping hem monitörün son bilgisi. */
+    /**
+     * Sunucu aktifliği (Ister_0018): anlık kontrol + monitörün son bilgisi.
+     * "detail" alanı, aktif değilse sebebini söyler (ulaşılamıyor mu, kimlik mi
+     * reddedildi) — yanlış yerde hata aramamak için.
+     */
     @GetMapping("/health")
     public Map<String, Object> health() {
+        DbmsClient.HealthStatus status = client.checkHealth();
         return Map.of(
-                "serverAlive", client.ping(),
+                "serverAlive", status.alive(),
+                "detail", status.detail(),
                 "monitorLastStatus", monitor.isServerAlive());
     }
 
@@ -144,12 +150,28 @@ public class DataController {
     }
 
     /**
-     * Kütüphane hatalarını uygun HTTP koduna çevirir:
-     * yetki reddi -> 403, diğer her şey (ara katman kapalı vb.) -> 502.
+     * Kütüphane hatalarını uygun HTTP koduna çevirir.
+     *
+     * Ayrım şuna dayanır: ara katman CEVAP VERDİ mi?
+     *   UNAUTHORIZED -> 403: cevap verdi, yetki yok.
+     *   ERROR        -> 400: cevap verdi, isteğimizi reddetti (örneğin tip
+     *                        doğrulaması: "Field 'yas' must be of type int").
+     *                        Sunucu sağlıklı, hatalı olan gönderilen veri.
+     *   status yok   -> 502: hiç cevap alınamadı (ara katman kapalı/erişilemez).
+     *
+     * Bu ayrım önemli: hepsine 502 demek, "sunucu bozuk, sonra tekrar dene"
+     * anlamına gelir ve istemciyi yanlış yöne sevk eder.
      */
     @ExceptionHandler(DbmsException.class)
     public ResponseEntity<Map<String, String>> handleDbmsError(DbmsException e) {
-        HttpStatus status = e.isUnauthorized() ? HttpStatus.FORBIDDEN : HttpStatus.BAD_GATEWAY;
+        HttpStatus status;
+        if (e.isUnauthorized()) {
+            status = HttpStatus.FORBIDDEN;
+        } else if (e.getStatus() != null) {
+            status = HttpStatus.BAD_REQUEST;
+        } else {
+            status = HttpStatus.BAD_GATEWAY;
+        }
         return ResponseEntity.status(status).body(Map.of("error", e.getMessage()));
     }
 }
