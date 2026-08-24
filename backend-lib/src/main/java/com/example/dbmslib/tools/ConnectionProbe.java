@@ -25,8 +25,14 @@ public class ConnectionProbe {
     private static final int DEFAULT_PORT = 5150;
 
     public static void main(String[] args) {
-        String host = args.length > 0 ? args[0] : DEFAULT_HOST;
-        int port = args.length > 1 ? Integer.parseInt(args[1]) : DEFAULT_PORT;
+        
+        String host = args.length > 0
+        ? args[0]
+        : env("MIDDLEWARE_HOST", DEFAULT_HOST);
+
+        int port = args.length > 1
+        ? Integer.parseInt(args[1])
+        : Integer.parseInt(env("MIDDLEWARE_PORT", String.valueOf(DEFAULT_PORT)));
         // GUVENLIK: gercek sifre icin varsayilan deger YOK - bu depo herkese acik.
         // Once "source set-credentials.sh" calistir ya da --args ile ver.
         String user = args.length > 2 ? args[2] : env("MIDDLEWARE_USER", null);
@@ -45,8 +51,14 @@ public class ConnectionProbe {
         try (DbmsClient client = new DbmsClient(host, port, user, pass)) {
 
             // 1) Sunucu ayakta mi? (Ister_0018)
-            boolean alive = client.ping();
-            System.out.println("1) PING              : " + (alive ? "OK - sunucu aktif" : "BASARISIZ"));
+            DbmsClient.HealthStatus health = client.checkHealth();
+
+            System.out.println("1) PING              : "
+                + (health.alive() ? "OK - sunucu aktif" : "BASARISIZ"));
+
+            System.out.println("   Detay             : " + health.detail());
+
+            boolean alive = health.alive(); 
             if (!alive) {
                 System.out.println();
                 System.out.println("Sunucuya ulasilamadi veya kimlik dogrulanamadi. Kontrol listesi:");
