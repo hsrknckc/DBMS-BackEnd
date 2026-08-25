@@ -19,6 +19,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -252,13 +253,79 @@ public class MockMiddlewareServer implements AutoCloseable {
         if (filter == null || filter.isEmpty()) {
             return true; // filtre yoksa tüm kayıtlar uyar
         }
+        if (record == null) {
+            return false;
+        }
         for (Map.Entry<String, Object> condition : filter.entrySet()) {
             Object actual = record.get(condition.getKey());
-            if (!String.valueOf(actual).equals(String.valueOf(condition.getValue()))) {
+            Object expected = condition.getValue();
+            if (expected instanceof Map<?, ?> opMap) {
+                if (!matchesOperators(actual, castOpMap(opMap))) {
+                    return false;
+                }
+            } else if (!looselyEquals(actual, expected)) {
                 return false;
             }
         }
         return true;
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> castOpMap(Map<?, ?> opMap) {
+        return (Map<String, Object>) opMap;
+    }
+
+    private boolean matchesOperators(Object actual, Map<String, Object> ops) {
+        for (Map.Entry<String, Object> opEntry : ops.entrySet()) {
+            String op = String.valueOf(opEntry.getKey()).toLowerCase().trim();
+            Object targetVal = opEntry.getValue();
+
+            switch (op) {
+                case ">", "gt" -> {
+                    if (compare(actual, targetVal) <= 0) return false;
+                }
+                case ">=", "gte" -> {
+                    if (compare(actual, targetVal) < 0) return false;
+                }
+                case "<", "lt" -> {
+                    if (compare(actual, targetVal) >= 0) return false;
+                }
+                case "<=", "lte" -> {
+                    if (compare(actual, targetVal) > 0) return false;
+                }
+                case "!=", "ne" -> {
+                    if (looselyEquals(actual, targetVal)) return false;
+                }
+                case "like", "contains" -> {
+                    if (actual == null || targetVal == null) return false;
+                    String actualStr = String.valueOf(actual).toLowerCase();
+                    String targetStr = String.valueOf(targetVal).toLowerCase();
+                    if (!actualStr.contains(targetStr)) return false;
+                }
+                default -> throw new IllegalArgumentException("Unsupported filter operator: " + op);
+            }
+        }
+        return true;
+    }
+
+    private boolean looselyEquals(Object actual, Object expected) {
+        if (actual instanceof Number && expected instanceof Number) {
+            return compare(actual, expected) == 0;
+        }
+        return Objects.equals(String.valueOf(actual), String.valueOf(expected));
+    }
+
+    private int compare(Object actual, Object expected) {
+        if (actual instanceof Number actualNumber && expected instanceof Number expectedNumber) {
+            return Double.compare(actualNumber.doubleValue(), expectedNumber.doubleValue());
+        }
+        if (actual instanceof Comparable<?> && expected != null
+                && actual.getClass().isAssignableFrom(expected.getClass())) {
+            @SuppressWarnings("unchecked")
+            Comparable<Object> comparable = (Comparable<Object>) actual;
+            return comparable.compareTo(expected);
+        }
+        return String.valueOf(actual).compareTo(String.valueOf(expected));
     }
 
     private DbResponse ok(String requestId, String message, List<Object> data) {
