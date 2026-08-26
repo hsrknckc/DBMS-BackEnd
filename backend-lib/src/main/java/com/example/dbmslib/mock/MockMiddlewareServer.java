@@ -15,61 +15,42 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketException;
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * SAHTE ARA KATMAN SUNUCUSU — sadece geliştirme ve test için!
- *
- * Ara katmancı ekip arkadaşının gerçek sunucusu hazır olana kadar,
- * PROTOKOL.md'deki sözleşmeyi birebir konuşan bu mini sunucuyla
- * kütüphaneyi geliştirip test edebilirsin. Veriyi MongoDB yerine
- * bellekte (HashMap) tutar; sunucu kapanınca veri uçar.
- *
- * Gerçek ara katman hazır olduğunda tek yapman gereken host/port
- * ayarını onun adresine çevirmek — kütüphane kodu değişmez.
- *
- * Elle çalıştırmak için: ./gradlew :backend-lib:runMockServer
  */
 public class MockMiddlewareServer implements AutoCloseable {
 
-    /** Sahte kullanıcılar: kullanıcı adı -> [şifre, yetkili olduğu işlemler] */
     private record UserAccount(String password, Set<ActionType> allowedActions) {
     }
 
     private static final Map<String, UserAccount> USERS = Map.of(
-            // admin her şeyi yapabilir
             "admin", new UserAccount("admin123", Set.of(ActionType.values())),
-            // guest sadece okuyabilir — yetki reddi (UNAUTHORIZED) senaryosunu test etmek için
             "guest", new UserAccount("guest123", Set.of(
                     ActionType.PING, ActionType.READ,
                     ActionType.LIST_DATABASES, ActionType.LIST_COLLECTIONS)),
-
-            // Gerçek ara katman sunucusundaki kullanıcı ADLARININ aynısı (yalnızca
-            // e-posta kısmı), ama BİLEREK FARKLI, uydurma bir şifreyle. Bu depo
-            // herkese açık; gerçek EC2 şifresi hiçbir zaman burada yazmaz.
-            // Yerel testte bu kullanıcıları kullanmak istersen set-credentials.sh
-            // dosyandaki (git'e gitmeyen) gerçek şifreyi DEĞİL, aşağıdaki sahte
-            // şifreyi gir.
             "ayse@company.com", new UserAccount("mock-fake-pass-1", Set.of(ActionType.values())),
-            // mehmet sınırlı yetkili: okuyabilir ve yazabilir, ama güncelleyemez/silemez
             "mehmet@company.com", new UserAccount("mock-fake-pass-2", Set.of(
                     ActionType.PING, ActionType.READ, ActionType.WRITE,
                     ActionType.LIST_DATABASES, ActionType.LIST_COLLECTIONS))
     );
 
-    /** Bellekteki "MongoDB": veritabanı adı -> (koleksiyon adı -> kayıt listesi) */
     private final Map<String, Map<String, List<Map<String, Object>>>> store = new ConcurrentHashMap<>();
+    private final AtomicLong idCounter = new AtomicLong(100);
 
     private final ServerSocket serverSocket;
     private final Thread acceptThread;
 
-    /** @param port 0 verilirse boş bir port otomatik seçilir (testler için ideal) */
     public MockMiddlewareServer(int port) throws IOException {
         this.serverSocket = new ServerSocket(port);
         this.acceptThread = new Thread(this::acceptLoop, "mock-middleware-accept");
@@ -80,7 +61,6 @@ public class MockMiddlewareServer implements AutoCloseable {
         acceptThread.start();
     }
 
-    /** Sunucunun gerçekte dinlediği port (kurucuya 0 verildiyse buradan öğrenilir). */
     public int getPort() {
         return serverSocket.getLocalPort();
     }
@@ -93,14 +73,13 @@ public class MockMiddlewareServer implements AutoCloseable {
                 handler.setDaemon(true);
                 handler.start();
             } catch (SocketException closed) {
-                return; // close() çağrıldı, döngüden çık
+                return;
             } catch (IOException e) {
                 System.err.println("[mock] Bağlantı kabul hatası: " + e.getMessage());
             }
         }
     }
 
-    /** Bir istemcinin gönderdiği satırları tek tek okuyup her birine cevap yazar. */
     private void handleClient(Socket client) {
         try (client;
              BufferedReader in = new BufferedReader(
@@ -125,7 +104,7 @@ public class MockMiddlewareServer implements AutoCloseable {
                 out.flush();
             }
         } catch (IOException e) {
-            // istemci koptu; sunucu çalışmaya devam eder
+            // baglanti koptu
         }
     }
 
@@ -136,7 +115,6 @@ public class MockMiddlewareServer implements AutoCloseable {
             return error(requestId, "'action' alanı zorunludur");
         }
 
-        // Kimlik + yetki kontrolü (Ister_0015'in sahtesi)
         UserAccount user = USERS.get(request.getUsername());
         if (user == null || !user.password().equals(request.getPassword())) {
             return new DbResponse(requestId, ResponseStatus.UNAUTHORIZED,
@@ -163,23 +141,48 @@ public class MockMiddlewareServer implements AutoCloseable {
         if (request.getDatabase() == null || request.getCollection() == null || request.getDocument() == null) {
             return error(request.getRequestId(), "WRITE için database, collection ve document zorunludur");
         }
+        Map<String, Object> doc = request.getDocument();
+        if (doc.isEmpty()) {
+            return error(request.getRequestId(), "document field must be a non-empty object");
+        }
+
+        // Sistem Alanlari Guvenligi
+        if (doc.containsKey("id") || doc.containsKey("_id")) {
+            return error(request.getRequestId(), "Field 'id' is generated by server and cannot be provided");
+        }
+        if (doc.containsKey("createdAt")) {
+            return error(request.getRequestId(), "Field 'createdAt' is set by server and cannot be provided");
+        }
+        if (doc.containsKey("updatedAt")) {
+            return error(request.getRequestId(), "Field 'updatedAt' is set by server and cannot be provided");
+        }
+        if (doc.containsKey("isDeleted")) {
+            return error(request.getRequestId(), "Field 'isDeleted' is managed by server and cannot be provided");
+        }
+
+        // Recursive $ Kontrolu
+        String injectionErr = checkInjection(doc);
+        if (injectionErr != null) {
+            return error(request.getRequestId(), injectionErr);
+        }
+
         String typeError = validateTypes(request);
         if (typeError != null) {
             return error(request.getRequestId(), typeError);
         }
-        collectionOf(request).add(new HashMap<>(request.getDocument()));
-        return ok(request.getRequestId(), "1 kayıt eklendi", null);
+
+        // Sunucu Alanlarini Ekle
+        Map<String, Object> record = new LinkedHashMap<>(doc);
+        String id = "rec-" + idCounter.incrementAndGet();
+        String now = Instant.now().toString();
+        record.put("id", id);
+        record.put("createdAt", now);
+        record.put("updatedAt", now);
+
+        collectionOf(request).add(record);
+        return ok(request.getRequestId(), "1 record inserted", List.of(record));
     }
 
-    /**
-     * Gerçek ara katmandaki tip doğrulamasının (Ister_0014) sadeleştirilmiş
-     * taklidi: "sayi_" ile başlayan alanlar sayı olmak zorundadır.
-     *
-     * Amaç gerçek şema motorunu kopyalamak değil; kütüphanenin ERROR cevabını
-     * doğru taşıdığını sahte sunucuyla da test edebilmek.
-     *
-     * @return hata mesajı, sorun yoksa null
-     */
     private String validateTypes(DbRequest request) {
         for (Map.Entry<String, Object> field : request.getDocument().entrySet()) {
             if (field.getKey().startsWith("sayi_") && !(field.getValue() instanceof Number)) {
@@ -195,37 +198,87 @@ public class MockMiddlewareServer implements AutoCloseable {
         if (request.getDatabase() == null || request.getCollection() == null) {
             return error(request.getRequestId(), "READ için database ve collection zorunludur");
         }
+        String injectionErr = checkInjection(request.getFilter());
+        if (injectionErr != null) {
+            return error(request.getRequestId(), injectionErr);
+        }
+
         List<Object> matches = new ArrayList<>();
         for (Map<String, Object> record : collectionOf(request)) {
             if (matchesFilter(record, request.getFilter())) {
-                matches.add(new HashMap<>(record));
+                matches.add(new LinkedHashMap<>(record));
             }
         }
-        return ok(request.getRequestId(), matches.size() + " kayıt bulundu", matches);
+        return ok(request.getRequestId(), matches.size() + " record(s) found", matches);
     }
 
     private DbResponse doUpdate(DbRequest request) {
         if (request.getDatabase() == null || request.getCollection() == null || request.getDocument() == null) {
             return error(request.getRequestId(), "UPDATE için database, collection ve document zorunludur");
         }
+        Map<String, Object> doc = request.getDocument();
+        if (doc.isEmpty()) {
+            return error(request.getRequestId(), "document field must be a non-empty object");
+        }
+
+        // Sistem Alanlari Guvenligi
+        if (doc.containsKey("id") || doc.containsKey("_id")) {
+            return error(request.getRequestId(), "Field 'id' cannot be updated");
+        }
+        if (doc.containsKey("createdAt")) {
+            return error(request.getRequestId(), "Field 'createdAt' cannot be updated");
+        }
+        if (doc.containsKey("updatedAt")) {
+            return error(request.getRequestId(), "Field 'updatedAt' is managed by server and cannot be updated");
+        }
+
+        // Bos Filtre Kalkani
+        Map<String, Object> filter = request.getFilter();
+        if (filter == null || filter.isEmpty()) {
+            return error(request.getRequestId(), "Filter is required for UPDATE. Mass update with empty filter is not allowed.");
+        }
+
+        String injectionErr = checkInjection(filter);
+        if (injectionErr != null) {
+            return error(request.getRequestId(), injectionErr);
+        }
+
         int updated = 0;
+        String now = Instant.now().toString();
+        List<Object> updatedList = new ArrayList<>();
+
         for (Map<String, Object> record : collectionOf(request)) {
-            if (matchesFilter(record, request.getFilter())) {
-                record.putAll(request.getDocument());
+            if (matchesFilter(record, filter)) {
+                record.putAll(doc);
+                record.put("updatedAt", now);
+                updatedList.add(new LinkedHashMap<>(record));
                 updated++;
             }
         }
-        return ok(request.getRequestId(), updated + " kayıt güncellendi", null);
+        return ok(request.getRequestId(), updated + " record(s) updated", updatedList);
     }
 
     private DbResponse doDelete(DbRequest request) {
         if (request.getDatabase() == null || request.getCollection() == null) {
             return error(request.getRequestId(), "DELETE için database ve collection zorunludur");
         }
+
+        // Bos Filtre Kalkani
+        Map<String, Object> filter = request.getFilter();
+        if (filter == null || filter.isEmpty()) {
+            return error(request.getRequestId(), "Filter is required for DELETE. Mass deletion with empty filter is not allowed.");
+        }
+
+        String injectionErr = checkInjection(filter);
+        if (injectionErr != null) {
+            return error(request.getRequestId(), injectionErr);
+        }
+
         List<Map<String, Object>> collection = collectionOf(request);
         int before = collection.size();
-        collection.removeIf(record -> matchesFilter(record, request.getFilter()));
-        return ok(request.getRequestId(), (before - collection.size()) + " kayıt silindi", null);
+        collection.removeIf(record -> matchesFilter(record, filter));
+        int deleted = before - collection.size();
+        return ok(request.getRequestId(), deleted + " record(s) deleted", null);
     }
 
     private DbResponse doListCollections(DbRequest request) {
@@ -237,27 +290,54 @@ public class MockMiddlewareServer implements AutoCloseable {
         return ok(request.getRequestId(), db.size() + " koleksiyon", new ArrayList<>(db.keySet()));
     }
 
-    /** İstenen veritabanı/koleksiyonu bulur, yoksa oluşturur (MongoDB davranışı). */
     private List<Map<String, Object>> collectionOf(DbRequest request) {
         return store
                 .computeIfAbsent(request.getDatabase(), name -> new ConcurrentHashMap<>())
                 .computeIfAbsent(request.getCollection(), name -> new ArrayList<>());
     }
 
-    /**
-     * Kayıt filtreye uyuyor mu? Filtredeki her alan kayıtta aynı değerle
-     * bulunmalı. Sayı/metin karşılaştırması esnek yapılır ("3" == 3) çünkü
-     * HTTP query parametreleri her zaman metin olarak gelir.
-     */
+    private String checkInjection(Object obj) {
+        if (obj instanceof Map<?, ?> map) {
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                String key = String.valueOf(entry.getKey());
+                if (key.startsWith("$")) {
+                    return "Dangerous query operator: " + key;
+                }
+                String nestedErr = checkInjection(entry.getValue());
+                if (nestedErr != null) return nestedErr;
+            }
+        } else if (obj instanceof List<?> list) {
+            for (Object item : list) {
+                String nestedErr = checkInjection(item);
+                if (nestedErr != null) return nestedErr;
+            }
+        }
+        return null;
+    }
+
     private boolean matchesFilter(Map<String, Object> record, Map<String, Object> filter) {
         if (filter == null || filter.isEmpty()) {
-            return true; // filtre yoksa tüm kayıtlar uyar
+            return true;
         }
         if (record == null) {
             return false;
         }
-        for (Map.Entry<String, Object> condition : filter.entrySet()) {
-            Object actual = record.get(condition.getKey());
+
+        // _id toleransi: hem id hem _id varsa ve eslesiyorsa sadeleştir
+        Map<String, Object> cleanFilter = new HashMap<>(filter);
+        if (cleanFilter.containsKey("_id") && cleanFilter.containsKey("id")) {
+            if (Objects.equals(cleanFilter.get("_id"), cleanFilter.get("id"))) {
+                cleanFilter.remove("_id");
+            }
+        }
+
+        for (Map.Entry<String, Object> condition : cleanFilter.entrySet()) {
+            String key = condition.getKey();
+            if ("_id".equals(key) && !record.containsKey("_id") && record.containsKey("id")) {
+                key = "id";
+            }
+
+            Object actual = record.get(key);
             Object expected = condition.getValue();
             if (expected instanceof Map<?, ?> opMap) {
                 if (!matchesOperators(actual, castOpMap(opMap))) {
@@ -341,7 +421,6 @@ public class MockMiddlewareServer implements AutoCloseable {
         serverSocket.close();
     }
 
-    /** Elle çalıştırma girişi: portu argüman olarak alabilir, almazsa 5150. */
     public static void main(String[] args) throws Exception {
         int port = args.length > 0 ? Integer.parseInt(args[0]) : 5150;
         MockMiddlewareServer server = new MockMiddlewareServer(port);
@@ -349,6 +428,6 @@ public class MockMiddlewareServer implements AutoCloseable {
         System.out.println("[mock] Sahte ara katman " + server.getPort() + " portunda dinliyor.");
         System.out.println("[mock] Kullanıcılar: admin/admin123 (tam yetki), guest/guest123 (sadece okuma)");
         System.out.println("[mock] Durdurmak için Ctrl+C.");
-        Thread.currentThread().join(); // sonsuza kadar bekle
+        Thread.currentThread().join();
     }
 }
